@@ -11,7 +11,7 @@ from revtool.crypto_scan import map_offset_to_section
 _ASCII_RE = re.compile(rb"[\x20-\x7e]{4,}")
 _UTF16LE_RE = re.compile(rb"(?:[\x20-\x7e]\x00){4,}")
 
-_FLAG_RE = re.compile(r"(?:flag|ctf|cyb\d*|gemastik|compfest|arkav|findit|picoctf|htb)\{[^}]{2,}\}", re.I)
+_FLAG_RE = re.compile(r"(?:flag|ctf|cj|cyb\d*|gemastik|compfest|arkav|findit|picoctf|htb)\{[^}]{2,}\}", re.I)
 _URL_RE = re.compile(r"https?://[^\s'\"<>]+", re.I)
 _IP_RE = re.compile(r"\b(?:\d{1,3}\.){3}\d{1,3}(?::\d{1,5})?\b")
 _B64_RE = re.compile(r"^(?:[A-Za-z0-9+/]{16,}={0,2})$")
@@ -28,6 +28,14 @@ _ANTIDBG_WORDS = (
 _EXEC_WORDS = (
     "/bin/sh", "/bin/bash", "cmd.exe", "powershell", "mmap", "mprotect",
     "memfd_create", "virtualalloc", "virtualprotect", "execve",
+)
+_CRACKME_WORDS = (
+    "correct", "incorrect", "wrong flag", "success", "failure",
+    "flaginput", "validatebtn", "checkflag", "congrats", "evalnwbin",
+)
+_SECRET_WORDS = (
+    "secret", "api_key", "apikey", "bearer ", "token", "private_key",
+    "rules.json", "traffic.pcap",
 )
 
 
@@ -61,6 +69,12 @@ def classify_string(text: str) -> list[str]:
         tags.append("ANTI_DBG")
     if any(w in lower for w in _EXEC_WORDS):
         tags.append("EXEC_IO")
+    if any(w in lower for w in _CRACKME_WORDS):
+        tags.append("CRACKME_UI")
+    if any(w in lower for w in _SECRET_WORDS):
+        tags.append("SECRET")
+    if text.startswith("_D") and len(text) >= 5 and text[2].isdigit():
+        tags.append("DLANG_SYM")
     if ("/" in text or "\\" in text) and len(text) >= 5 and not _URL_RE.search(text):
         if text.startswith(("/", "./", "../", "C:\\", "\\\\")) or "/proc/" in text or "/dev/" in text:
             tags.append("PATH")

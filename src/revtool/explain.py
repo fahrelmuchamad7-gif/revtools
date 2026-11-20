@@ -80,6 +80,44 @@ def explain_recon(recon: dict[str, Any], theme: Theme, phase: int = 5) -> str:
                         "Tidak terdeteksi packer komersial; ekstrak APK lalu dekompilasi classes.dex dengan jadx-gui dan periksa AndroidManifest.xml.",
                     )
                 )
+            if target_arch.get("mobile_framework"):
+                fw = target_arch["mobile_framework"]
+                if fw.get("engine") == "Hermes":
+                    lines.append(
+                        _note(
+                            theme,
+                            "React Native / Hermes",
+                            f"Aplikasi dibuat dengan React Native menggunakan Hermes Bytecode (HBC v{fw.get('version', '')}). "
+                            f"Logika utama aplikasi berada di file bundle `{fw.get('bundle', 'assets/index.android.bundle')}` dan BUKAN di classes.dex! "
+                            "Gunakan tool seperti `hbctool` atau `hermes-dec` untuk membongkar bytecode Hermes, atau cari string flag langsung di file bundle.",
+                        )
+                    )
+                elif fw.get("engine") == "Flutter":
+                    lines.append(
+                        _note(
+                            theme,
+                            "Flutter AOT",
+                            "Aplikasi dibuat dengan framework Flutter. Logika Dart dikompilasi AOT ke dalam library native `libapp.so`. "
+                            "Gunakan `reFlutter` atau `flutter-re-tools` untuk merekonstruksi simbol Dart dari snapshot AOT.",
+                        )
+                    )
+                elif fw.get("engine") == "Unity":
+                    lines.append(
+                        _note(
+                            theme,
+                            "Unity IL2CPP",
+                            "Game/aplikasi Unity menggunakan engine IL2CPP. Kode C# dikompilasi ke library native `libil2cpp.so`. "
+                            "Gunakan `Il2CppDumper` bersama file `assets/bin/Data/Managed/Metadata/global-metadata.dat` untuk mengekstrak simbol dan method.",
+                        )
+                    )
+                elif fw.get("engine") == "Cordova":
+                    lines.append(
+                        _note(
+                            theme,
+                            "Webview Mobile",
+                            "Aplikasi dibungkus dengan Cordova/Capacitor. Kode sumber JavaScript/HTML terletak di folder `assets/www/`.",
+                        )
+                    )
             if target_arch.get("manifest_components"):
                 lines.append(
                     _note(
@@ -121,6 +159,25 @@ def explain_recon(recon: dict[str, Any], theme: Theme, phase: int = 5) -> str:
                 )
             )
             return "\n".join(lines)
+    elif fmt == "HERMES":
+        lines.append(
+            _note(
+                theme,
+                "Hermes Bytecode",
+                f"File adalah React Native Hermes Bytecode (HBC) dengan entropi {entropy:.2f}/8.00. "
+                "Logika JavaScript telah dikompilasi menjadi bytecode Hermes. Gunakan `hbctool` atau `hermes-dec` untuk membongkarnya.",
+            )
+        )
+    elif fmt == "V8_CACHE":
+        lines.append(
+            _note(
+                theme,
+                "V8 Bytecode / NW.js",
+                f"File teridentifikasi sebagai V8 Bytecode Cache / NW.js Snapshot (`nwjc`) dengan entropi {entropy:.2f}/8.00. "
+                "Kode sumber JavaScript telah diubah menjadi snapshot V8 internal. Periksa string tabel dengan `revtool strings -i`, "
+                "atau jalankan dengan NW.js (`nw .`) dan pasang DevTools debugger via flag `--remote-debugging-port=9222`.",
+            )
+        )
     else:
         lines.append(
             _note(
@@ -182,6 +239,17 @@ def explain_recon(recon: dict[str, Any], theme: Theme, phase: int = 5) -> str:
                 f"Pelacakan statis `main()` ({main_flow['address']}) -> {'; '.join(parts)}.",
             )
         )
+    dlang_cand = recon.get("dlang_main_candidate")
+    if dlang_cand:
+        lines.append(
+            _note(
+                theme,
+                "Dlang _Dmain",
+                f"Biner ditulis dalam bahasa D (Dlang). Logika utama crackme berada di fungsi `_Dmain` pada alamat {dlang_cand}. "
+                f"Langsung lompat ke alamat ini di Ghidra atau jalankan `revtool disasm {file_path} -a {dlang_cand} -c 40`. "
+                "Simbol internal D menggunakan awalan mangling `_D...`.",
+            )
+        )
 
     # 3. Hardening / Checksec
     if mits:
@@ -202,6 +270,16 @@ def explain_recon(recon: dict[str, Any], theme: Theme, phase: int = 5) -> str:
                 theme,
                 "Go Runtime",
                 f"API seperti VirtualAlloc/mmap/ExceptionHandler/cpuid pada biner Go adalah boilerplate runtime Go. Lihat fungsi user dengan `revtool symbols {file_path} -f main.`.",
+            )
+        )
+    if recon.get("go_concurrency"):
+        lines.append(
+            _note(
+                theme,
+                "Go Concurrency",
+                "Program memanfaatkan goroutines dan channels (`chan`) untuk komunikasi data dan pemrosesan paralel "
+                "(terdeteksi runtime `makechan`, `chansend`, `chanrecv`). Dalam challenge crackme, alur pengiriman/penerimaan channel "
+                "sering membagi karakter flag ke worker thread terpisah.",
             )
         )
     if any(k in non_go_syms for k in ("mmap", "mmap64", "mprotect", "virtualalloc", "virtualprotect", "memfd_create")):

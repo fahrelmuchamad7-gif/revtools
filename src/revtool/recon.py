@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import io
 import re
+import struct
 import zipfile
 from pathlib import Path
 from typing import Any
@@ -87,13 +88,30 @@ def fingerprint_runtime(
     report: dict[str, Any],
 ) -> list[str]:
     """Identify compiler, language, runtime, or packer fingerprints."""
-    if report.get("format") not in ("ELF", "PE", "MACH-O", "WASM", "DEX"):
+    if report.get("format") not in ("ELF", "PE", "MACH-O", "WASM", "DEX", "HERMES", "V8_CACHE"):
         return []
 
     tags: list[str] = []
     sec_names = {str(s.get("name", "")).lower() for s in report.get("sections", [])}
     sym_names = " ".join(str(s.get("name", "")) for s in report.get("symbols", []))
     libs = " ".join(str(l) for l in report.get("needed_libraries", [])).lower()
+
+    if (
+        b"_Dmain" in data
+        or b"_d_run_main" in data
+        or b"rt.dmain" in data
+        or b"/dlang/" in data
+        or b"core.internal" in data
+        or b"import/std/" in data
+        or any(str(s.get("name", "")).startswith("_D") for s in report.get("symbols", []))
+    ):
+        ldc_ver = re.search(rb"ldc-\d+\.\d+\.\d+", data, re.I)
+        if ldc_ver:
+            tags.append(f"D (Dlang) Binary [LDC {ldc_ver.group().decode('ascii', errors='ignore')[4:]}]")
+        elif b"dmd" in data:
+            tags.append("D (Dlang) Binary [DMD]")
+        else:
+            tags.append("D (Dlang) Binary")
 
     if ".gopclntab" in sec_names or b"Go build ID:" in data or b"runtime.main" in data:
         go_ver = re.search(rb"go1\.\d+(?:\.\d+)?", data)
@@ -126,6 +144,10 @@ def fingerprint_runtime(
 
     if report.get("format") == "WASM":
         tags.append("WebAssembly Module (.wasm)")
+    if report.get("format") == "HERMES":
+        tags.append("React Native Hermes Bytecode (HBC)")
+    if report.get("format") == "V8_CACHE" or b"evalNWBin" in data or b"nwjc" in data:
+        tags.append("V8 Bytecode / NW.js Snapshot (nwjc)")
     if not tags and report.get("format") in ("ELF", "PE"):
         tags.append("Native C / C++ / Assembly Binary")
 
@@ -432,6 +454,51 @@ def _vaddr_to_offset_via_sections(vaddr: int, report: dict[str, Any]) -> int | N
         s_off = int(sec.get("offset", 0))
         if s_size > 0 and s_addr <= target < s_addr + s_size:
             return s_off + (target - s_addr)
+    return None
+
+
+def _resolve_dlang_main(
+    data: bytes,
+    report: dict[str, Any],
+    c_main_addr_str: str | None,
+) -> str | None:
+    """Resolve _Dmain entry point from Dlang's C main wrapper (lea rdx, [_Dmain]; call _d_run_main)."""
+    try:
+        import capstone
+    except ImportError:
+        return None
+
+    candidates: list[int] = []
+    if c_main_addr_str:
+        try:
+            candidates.append(int(c_main_addr_str, 16))
+        except ValueError:
+            pass
+    ep = report.get("header", {}).get("entry_point")
+    if ep is not None and ep not in candidates:
+        candidates.append(ep)
+
+    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    for main_addr in candidates:
+        main_off = _vaddr_to_offset_via_sections(main_addr, report)
+        if main_off is None or main_off >= len(data):
+            continue
+
+        chunk = data[main_off : min(len(data), main_off + 96)]
+        for ins in md.disasm(chunk, main_addr):
+            if ins.mnemonic == "lea" and "rdx, [rip" in ins.op_str:
+                try:
+                    part = ins.op_str.split("[rip", 1)[1].rstrip("]").strip()
+                    if part.startswith("+"):
+                        disp = int(part[1:].strip(), 0)
+                        target = ins.address + ins.size + disp
+                        return f"0x{target:x}"
+                    elif part.startswith("-"):
+                        disp = int(part[1:].strip(), 0)
+                        target = ins.address + ins.size - disp
+                        return f"0x{target:x}"
+                except ValueError:
+                    pass
     return None
 
 
@@ -797,8 +864,56 @@ def _scan_zip_bytes(data: bytes, depth: int = 0) -> dict[str, Any] | None:
     dex_strings: list[dict[str, Any]] = []
     dex_crypto: list[dict[str, Any]] = []
     native_elf_checks: list[dict[str, Any]] = []
+    mobile_framework: dict[str, Any] | None = None
 
     if is_apk:
+        if "assets/index.android.bundle" in names:
+            try:
+                bundle_data = zf.read("assets/index.android.bundle")
+                if bundle_data.startswith(b"\xc6\x1f\xbc\x03\xc1\x03\x19\x1f") or bundle_data.startswith(b"\x1f\x19\x03\xc1"):
+                    hbc_ver = struct.unpack_from("<I", bundle_data, 8)[0] if len(bundle_data) >= 12 else 0
+                    bundle_strs = extract_strings(bundle_data[:1048576], min_len=5, encoding="ascii", only_interesting=True)[:25]
+                    mobile_framework = {
+                        "name": f"React Native (Hermes Bytecode HBC v{hbc_ver})",
+                        "engine": "Hermes",
+                        "bundle": "assets/index.android.bundle",
+                        "bundle_size": len(bundle_data),
+                        "version": hbc_ver,
+                        "strings": bundle_strs,
+                    }
+                else:
+                    mobile_framework = {
+                        "name": "React Native (Plain JavaScript Bundle)",
+                        "engine": "React Native",
+                        "bundle": "assets/index.android.bundle",
+                        "bundle_size": len(bundle_data),
+                    }
+            except Exception:
+                pass
+        elif any("libhermes" in n.lower() for n in native_libs):
+            mobile_framework = {
+                "name": "React Native (Hermes Engine)",
+                "engine": "Hermes",
+            }
+
+        if not mobile_framework and (any("libflutter.so" in n for n in native_libs) or any("libapp.so" in n for n in native_libs)):
+            mobile_framework = {
+                "name": "Flutter (Dart AOT Snapshot in libapp.so)",
+                "engine": "Flutter",
+            }
+
+        if not mobile_framework and any("libil2cpp.so" in n for n in native_libs):
+            mobile_framework = {
+                "name": "Unity Engine (IL2CPP / libil2cpp.so)",
+                "engine": "Unity",
+            }
+
+        if not mobile_framework and any(n.startswith("assets/www/") for n in names):
+            mobile_framework = {
+                "name": "Apache Cordova / Capacitor (Webview)",
+                "engine": "Cordova",
+            }
+
         if "AndroidManifest.xml" in names:
             try:
                 manifest_bytes = zf.read("AndroidManifest.xml")
@@ -879,6 +994,7 @@ def _scan_zip_bytes(data: bytes, depth: int = 0) -> dict[str, Any] | None:
         "dex_strings": dex_strings[:20],
         "dex_crypto": dex_crypto[:10],
         "native_elf_checks": native_elf_checks,
+        "mobile_framework": mobile_framework,
         "nested_apk": nested_apk_info,
     }
 
@@ -901,6 +1017,9 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
 
     runtime = fingerprint_runtime(data, report)
     is_go = any("Go (" in r for r in runtime)
+    is_dlang = any("D (Dlang)" in r for r in runtime)
+    dlang_main_candidate: str | None = None
+    go_main_candidate: str | None = None
     api_behaviors = classify_api_behaviors(report, is_go=is_go)
     archive_info = inspect_archive(data)
     wasm_info = inspect_wasm(data) if fmt == "WASM" else None
@@ -919,6 +1038,10 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
             fmt = "APK"
             crypto_hits = archive_info.get("dex_crypto", [])
             interesting_strings = archive_info.get("dex_strings", [])
+            if archive_info.get("mobile_framework") and archive_info["mobile_framework"].get("strings"):
+                for bs in archive_info["mobile_framework"]["strings"]:
+                    bs["section"] = archive_info["mobile_framework"].get("bundle", "bundle")
+                    interesting_strings.append(bs)
     else:
         crypto_hits = scan_crypto_constants(data, sections, image_base, fmt)
         embedded_magic = scan_embedded_magic(data, sections, image_base, fmt)
@@ -937,6 +1060,28 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
             entropy_blobs = annotate_go_blob_xrefs(data, report, entropy_blobs)
         code_scan = scan_code_anomalies(data, report, is_go=is_go)
         main_flow = analyze_main_flow(data, report, code_scan.get("main_candidate"))
+
+        # Dlang _Dmain resolution
+        if is_dlang:
+            dlang_main_candidate = _resolve_dlang_main(data, report, code_scan.get("main_candidate"))
+            if dlang_main_candidate:
+                d_flow = analyze_main_flow(data, report, dlang_main_candidate)
+                if d_flow and (d_flow.get("calls") or d_flow.get("inline_hints") or d_flow.get("data_refs")):
+                    main_flow = d_flow
+
+        # Go main.main resolution
+        if is_go:
+            go_main_sym = next(
+                (s for s in report.get("symbols", []) if s.get("name") == "main.main" and int(s.get("value", 0)) > 0),
+                None,
+            )
+            if go_main_sym:
+                go_main_candidate = f"0x{go_main_sym['value']:x}"
+                if not code_scan.get("main_candidate"):
+                    code_scan["main_candidate"] = go_main_candidate
+                if not main_flow:
+                    main_flow = analyze_main_flow(data, report, go_main_candidate)
+
         interesting_strings = extract_strings(
             data,
             sections=sections,
@@ -952,7 +1097,14 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
 
     # Compute prioritized tactical leads ("Next Recon Leads")
     leads: list[str] = []
+    has_go_channels = False
     if is_go:
+        has_go_channels = any(
+            s.get("name") in ("runtime.makechan", "runtime.chansend1", "runtime.chanrecv1", "runtime.selectgo")
+            for s in report.get("symbols", [])
+        ) or (b"runtime.makechan" in data and b"runtime.chansend" in data)
+        if has_go_channels:
+            leads.append("Go Concurrency: Program utilizes goroutines & channels (chan) for communication")
         go_user_funcs = [
             s for s in report.get("symbols", [])
             if s.get("table") == ".gopclntab" and s.get("name", "").startswith("main.")
@@ -960,6 +1112,8 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         if go_user_funcs:
             preview = ", ".join(f"{s['name']} (0x{s['value']:x})" for s in go_user_funcs[:5])
             leads.append(f"Go user functions recovered from gopclntab ({len(go_user_funcs)}): {preview}")
+    if is_dlang and dlang_main_candidate:
+        leads.append(f"Dlang user main (_Dmain) candidate at {dlang_main_candidate} (passed to _d_run_main)")
     if tls_callbacks:
         cb_str = ", ".join(f"0x{a:x}" for a in tls_callbacks[:4])
         leads.append(f"PE TLS Callback(s) at {cb_str} — executes BEFORE Entry Point!")
@@ -1011,7 +1165,12 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         )
     if wasm_info and wasm_info.get("exports"):
         leads.append(f"WASM exported functions: {', '.join(wasm_info['exports'][:8])}")
+    if fmt == "V8_CACHE" or any("V8 Bytecode" in r for r in runtime):
+        leads.append("NW.js / Chromium V8 Bytecode Cache (nwjc) — JavaScript source compiled to V8 snapshot binary")
     if archive_info:
+        if archive_info.get("mobile_framework"):
+            fw = archive_info["mobile_framework"]
+            leads.append(f"Mobile Framework: {fw['name']} — app logic in {fw.get('bundle', 'native libs')}, NOT classes.dex!")
         if archive_info["packer_hints"]:
             for ph in archive_info["packer_hints"]:
                 leads.append(f"Archive/APK packer: {ph}")
@@ -1030,6 +1189,9 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         "header": hdr,
         "mitigations": report.get("mitigations", {}),
         "runtime_fingerprint": runtime,
+        "go_main_candidate": go_main_candidate,
+        "dlang_main_candidate": dlang_main_candidate,
+        "go_concurrency": has_go_channels,
         "pre_entry_hooks": {
             "init_array": [f"0x{a:x}" for a in init_functions],
             "tls_callbacks": [f"0x{a:x}" for a in tls_callbacks],

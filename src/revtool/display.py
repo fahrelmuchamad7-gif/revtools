@@ -509,10 +509,21 @@ def format_recon_with_phase(recon: dict[str, Any], theme: Theme) -> tuple[str, i
             profile_items.append(("Entry Point", f"0x{hdr['entry_point']:x}"))
     if runtime:
         profile_items.append(("Runtime / Compiler", ", ".join(runtime)))
-    if recon.get("code_scan", {}).get("main_candidate"):
+    if recon.get("dlang_main_candidate"):
+        profile_items.append(
+            ("Dlang user main()", theme.bold_cyan(f"{recon['dlang_main_candidate']} (_Dmain)"))
+        )
+    elif recon.get("go_main_candidate"):
+        profile_items.append(
+            ("Go user main()", theme.bold_cyan(f"{recon['go_main_candidate']} (main.main)"))
+        )
+    elif recon.get("code_scan", {}).get("main_candidate"):
         profile_items.append(
             ("Stripped main()?", theme.bold_cyan(recon["code_scan"]["main_candidate"]))
         )
+    arch_recon = recon.get("archive")
+    if arch_recon and arch_recon.get("mobile_framework"):
+        profile_items.append(("Mobile Framework", theme.bold_cyan(arch_recon["mobile_framework"]["name"])))
     pre_hooks = recon.get("pre_entry_hooks", {})
     if pre_hooks.get("tls_callbacks"):
         profile_items.append(
@@ -683,6 +694,8 @@ def format_recon_with_phase(recon: dict[str, Any], theme: Theme) -> tuple[str, i
             ("DEX Files", ", ".join(arch["dex_files"]) if arch["dex_files"] else "None"),
             ("Native .so Count", str(len(arch["native_libs"]))),
         ]
+        if arch.get("mobile_framework"):
+            arch_items.insert(0, ("Mobile Framework", theme.bold_cyan(arch["mobile_framework"]["name"])))
         lines.extend(render_kv_block(arch_items, theme))
         if arch["packer_hints"]:
             for ph in arch["packer_hints"]:

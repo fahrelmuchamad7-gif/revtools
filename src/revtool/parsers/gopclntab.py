@@ -46,9 +46,9 @@ def _find_gopclntab_offset(data: bytes, sections: list[dict[str, Any]]) -> int |
 def parse_gopclntab(
     data: bytes,
     sections: list[dict[str, Any]] | None = None,
-    max_funcs: int = 10000,
+    max_funcs: int = 200000,
 ) -> list[dict[str, Any]]:
-    """Extract Go function symbols from gopclntab (supports Go 1.2 through Go 1.24+)."""
+    """Extract Go function symbols from gopclntab (supports Go 1.2 through Go 1.25+)."""
     sections = sections or []
     base = _find_gopclntab_offset(data, sections)
     if base is None or base + 16 > len(data):
@@ -72,7 +72,7 @@ def parse_gopclntab(
 
         ftab_start = base + pcln_off
         funcname_start = base + funcname_off
-        if nfunc == 0 or nfunc > 200000 or ftab_start >= len(data) or funcname_start >= len(data):
+        if nfunc == 0 or nfunc > 500000 or ftab_start >= len(data) or funcname_start >= len(data):
             return []
 
         count = min(nfunc, max_funcs)
@@ -121,7 +121,7 @@ def parse_gopclntab(
         nfunc, _nfiles, funcname_off, _cu_off, _filetab_off, _pctab_off, pcln_off = fields
         ftab_start = base + pcln_off
         funcname_start = base + funcname_off
-        if nfunc == 0 or nfunc > 200000 or ftab_start >= len(data) or funcname_start >= len(data):
+        if nfunc == 0 or nfunc > 500000 or ftab_start >= len(data) or funcname_start >= len(data):
             return []
 
         ent_sz = ptr_sz * 2
@@ -159,7 +159,7 @@ def parse_gopclntab(
             return []
         nfunc = struct.unpack_from(pfmt, data, base + 8)[0]
         ftab_start = base + 8 + ptr_sz
-        if nfunc == 0 or nfunc > 200000 or ftab_start >= len(data):
+        if nfunc == 0 or nfunc > 500000 or ftab_start >= len(data):
             return []
         ent_sz = ptr_sz * 2
         count = min(nfunc, max_funcs)

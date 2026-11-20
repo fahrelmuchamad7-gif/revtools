@@ -8,12 +8,13 @@ Berjalan **100% offline** tanpa API AI dan dirancang nyaman dipakai di terminal 
 ## Fitur Utama
 
 - **`revtool recon <file>`** — **Recon Statis Lengkap Bertahap (`Phase 1`–`5`) + Penjelasan Bahasa Indonesia:**
-  - *Fingerprinting* bahasa/runtime/packer: **Go** (`gopclntab` + deteksi versi `go1.xx` & filter runtime), **Rust**, **Zig**, **Nim**, **PyInstaller** (+ versi Python), **.NET**, **UPX / suspek custom packer**.
+  - *Fingerprinting* bahasa/runtime/packer: **D (Dlang)** (`_Dmain` + LDC/DMD), **Go** (`gopclntab` hingga 500k simbol + deteksi versi `go1.xx` & filter runtime), **Rust**, **Zig**, **Nim**, **PyInstaller** (+ versi Python), **.NET**, **UPX / suspek custom packer**, **V8 Code Cache / NW.js snapshot** (`nwjc`), serta **React Native Hermes Bytecode** (`.hbc`).
+  - **Go Concurrency & Channels:** Deteksi otomatis pemrosesan konkuren/goroutines via `chan` (`makechan`, `chansend`, `chanrecv`, `selectgo`).
   - **Pre-Entry Hooks:** Deteksi *PE TLS Callbacks* (dieksekusi sebelum Entry Point) dan *ELF `.init_array` constructors* (dieksekusi sebelum `main()`).
-  - **Pelacakan Statis `main()` & Resolusi PLT:** Mencari kandidat `main()` pada biner *stripped*, memulihkan fungsi user Go (`main.*`), meresolusi panggilan `@plt`, referensi string `.rodata`/`.rdata`, serta konstanta inline (seperti FNV-1a).
+  - **Pelacakan Statis `main()` & Resolusi PLT:** Mencari kandidat `main()` pada biner *stripped*, auto-resolusi `_Dmain` pada biner Dlang, memulihkan fungsi user Go (`main.*`), meresolusi panggilan `@plt`, referensi string `.rodata`/`.rdata`, serta konstanta inline (seperti FNV-1a).
   - **Perilaku API & Anomali Kode:** Pengelompokan API mencurigakan (`mmap`/`mprotect`/RWX, `ptrace`/`prctl`, `signal`/`sigaction`, `fork`), pemindaian instruksi anomali (`hlt`, `ud2`, `int3`, `rdtsc`, `cpuid`, `syscall`), indikasi **Nanomites**, dan *indirect jump* (kandidat `switch` / *VM dispatcher*).
   - **Kripto, Blob Entropi, & Magic Tertanam:** Deteksi konstanta AES, SHA-1/256/512, MD5, CRC32, TEA/XTEA, Blowfish, ChaCha20/Salsa20, SipHash, Base64/32/58, Zlib tervalidasi, serta penandaan XREF `main.*` vs `stdlib/runtime` pada blob biner Go.
-  - **Inspeksi Mobile & WebAssembly:** Pemindaian Android APK/ZIP (`AndroidManifest.xml`, `classes*.dex`, analisis ELF pada `.so`, deteksi packer seperti `DPT-Shell`, `Jiagu`, `Bangcle`, `Flutter`, `IL2CPP`) dan modul `.wasm`.
+  - **Inspeksi Mobile Framework & WebAssembly:** Pemindaian Android APK (`AndroidManifest.xml`, `classes*.dex`, analisis ELF pada `.so`, deteksi packer seperti `DPT-Shell`, `Jiagu`, `Bangcle`), deteksi framework mobile (**React Native dengan Hermes Bytecode HBC v96+**, **Flutter Dart AOT `libapp.so`**, **Unity IL2CPP**, **Cordova/Capacitor**), serta modul WebAssembly (`.wasm`).
 - **`revtool triage <file>`** — Ringkasan cepat struktur file, hash, header, proteksi (`checksec`), tabel section + entropi, dan ringkasan import.
 - **`revtool info <file>`** — Detail file, hash (MD5/SHA-1/SHA-256), header arsitektur, Entry Point, dan status mitigasi.
 - **`revtool sections <file>`** — Tabel section (`VAddr`, `Offset`, `Size`, izin `RWX`, dan *Shannon entropy*).
@@ -21,7 +22,7 @@ Berjalan **100% offline** tanpa API AI dan dirancang nyaman dipakai di terminal 
 - **`revtool imports <file>`** — Daftar library eksternal yang ditautkan dan fungsi yang di-import (`-f` filter, `-l` batas).
 - **`revtool symbols <file>`** — Tabel simbol ELF (`.symtab`/`.dynsym`/`.gopclntab`), export PE, atau simbol Mach-O (`-f`, `-t FUNC`, `-l`).
 - **`revtool disasm <file>`** — Disassembly via Capstone pada Entry Point, `--section`, atau `--addr` (dukung `--raw` / `--asm-only` untuk pipe bersih).
-- **`revtool strings <file>`** — Ekstraksi string ASCII & UTF-16LE dengan offset, VAddr, section, dan tag recon (`FLAG_FMT`, `URL`, `IP`, `BASE64_CAND`, `HEX_BLOB`, `CRYPTO`, `ANTI_DBG`, `EXEC_IO`, `PATH`).
+- **`revtool strings <file>`** — Ekstraksi string ASCII & UTF-16LE dengan offset, VAddr, section, dan tag recon (`FLAG_FMT` termasuk `CJ{...}`, `CRACKME_UI`, `SECRET`, `DLANG_SYM`, `URL`, `IP`, `BASE64_CAND`, `HEX_BLOB`, `CRYPTO`, `ANTI_DBG`, `EXEC_IO`, `PATH`).
 - **`revtool crypto <file>`** — Pemindai konstanta kripto standar dan signature file/Zlib tertanam.
 - **`revtool blobs <file>`** — Pencari area byte berentropi tinggi (*sliding window*) lengkap dengan XREF `main.*` untuk biner Go.
 - **`revtool xform <file>`** — Alat bantu transformasi byte statis di terminal (`--section`, `--offset`, `--length`, `--swap`, `--rol`, `--ror`, `--word-size`, `--xor`, `--unhex`, `--b64d`, `--out`).

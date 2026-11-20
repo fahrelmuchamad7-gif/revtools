@@ -664,6 +664,73 @@ class TestRevtool(unittest.TestCase):
         self.assertEqual(blobs_gx[1]["xref_main"], [])
         self.assertIn("Go stdlib/runtime", blobs_gx[1]["xref_label"])
 
+    def test_cyber_jawara_2025_capabilities(self) -> None:
+        """Test support for Dlang, Go concurrency, Hermes HBC APK, and V8 snapshot."""
+        import zipfile
+        from revtool.parsers import analyze_file
+        from revtool.recon import run_recon
+        from revtool.strings_scan import classify_string
+
+        # 1. New string tags
+        self.assertIn("FLAG_FMT", classify_string("CJ{christian-dior-dior_pop_smoke}"))
+        self.assertIn("CRACKME_UI", classify_string("validateBtn"))
+        self.assertIn("CRACKME_UI", classify_string("CORRECT FLAG"))
+        self.assertIn("SECRET", classify_string("rules.json"))
+        self.assertIn("SECRET", classify_string("my_secret_token_123"))
+        self.assertIn("DLANG_SYM", classify_string("_D4main4mainFZv"))
+
+        # 2. V8 Code Cache / NW.js snapshot (nwjc)
+        v8_path = self.root / "chall.bin"
+        v8_path.write_bytes(b"\x89\x06\xde\xc0" + b"\x00" * 64 + b"CORRECT FLAG\x00validateBtn\x00")
+        v8_rep = analyze_file(v8_path)
+        self.assertEqual(v8_rep["format"], "V8_CACHE")
+        v8_rec = run_recon(v8_path)
+        self.assertTrue(any("V8 Bytecode" in lead for lead in v8_rec["tactical_leads"]))
+
+        # 3. Hermes standalone bytecode file (.hbc / bundle)
+        hbc_path = self.root / "index.android.bundle"
+        hbc_buf = bytearray(64)
+        struct.pack_into("<QI", hbc_buf, 0, 0x1F1903C103BC1FC6, 96)
+        hbc_path.write_bytes(bytes(hbc_buf))
+        hbc_rep = analyze_file(hbc_path)
+        self.assertEqual(hbc_rep["format"], "HERMES")
+        hbc_rec = run_recon(hbc_path)
+        self.assertTrue(any("Hermes" in r for r in hbc_rec["runtime_fingerprint"]))
+
+        # 4. React Native Hermes APK framework detection
+        apk_path = self.root / "hermes_test.apk"
+        with zipfile.ZipFile(apk_path, "w") as zf:
+            zf.writestr("AndroidManifest.xml", b"\x00" * 32 + b"MainActivity")
+            zf.writestr("classes.dex", b"dex\n035\x00" + b"\x00" * 32)
+            zf.writestr("assets/index.android.bundle", bytes(hbc_buf))
+            zf.writestr("lib/arm64-v8a/libhermes.so", b"\x7fELF\x02\x01\x01\x00" + b"\x00" * 64)
+        apk_rec = run_recon(apk_path)
+        self.assertIsNotNone(apk_rec["archive"].get("mobile_framework"))
+        self.assertIn("Hermes Bytecode HBC v96", apk_rec["archive"]["mobile_framework"]["name"])
+        self.assertTrue(any("Mobile Framework: React Native (Hermes Bytecode HBC v96)" in l for l in apk_rec["tactical_leads"]))
+
+        # 5. Dlang binary runtime & _Dmain candidate resolution
+        # Build ELF64 with main wrapper at 0x1140 that does `lea rdx, [rip + 0x10]; call 0x1200`
+        d_elf = bytearray(_build_minimal_elf64())
+        # Overwrite .text at 0x140 (vaddr 0x1140):
+        # 48 8d 15 10 00 00 00 (lea rdx, [rip + 0x10] -> 0x1147 + 0x10 = 0x1157); e8 00 00 00 00 (call); c3
+        d_elf[0x140 : 0x14D] = b"\x48\x8d\x15\x10\x00\x00\x00\xe8\x00\x00\x00\x00\xc3"
+        d_bin = bytes(d_elf) + b"\x00_Dmain\x00ldc-1.41.0\x00/dlang/\x00"
+        d_path = self.root / "dior_test"
+        d_path.write_bytes(d_bin)
+        d_rec = run_recon(d_path)
+        self.assertTrue(any("D (Dlang) Binary [LDC 1.41.0]" in r for r in d_rec["runtime_fingerprint"]))
+        self.assertEqual(d_rec["dlang_main_candidate"], "0x1157")
+        self.assertTrue(any("Dlang user main (_Dmain) candidate at 0x1157" in l for l in d_rec["tactical_leads"]))
+
+        # 6. Go Concurrency detection
+        go_chan_elf = bytes(_build_minimal_elf64()) + b"\x00Go build ID: go1.25.0\x00runtime.makechan\x00runtime.chansend\x00"
+        go_chan_path = self.root / "go_chan_test"
+        go_chan_path.write_bytes(go_chan_elf)
+        go_chan_rec = run_recon(go_chan_path)
+        self.assertTrue(go_chan_rec["go_concurrency"])
+        self.assertTrue(any("Go Concurrency" in l for l in go_chan_rec["tactical_leads"]))
+
     def test_cli_missing_file_returns_nonzero(self) -> None:
         err = io.StringIO()
         with redirect_stderr(err):
