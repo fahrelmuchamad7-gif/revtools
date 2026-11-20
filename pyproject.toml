@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "revtool"
-version = "0.4.0"
+version = "0.5.0"
 description = "Toolkit CLI berbahasa Indonesia untuk recon statis, inspeksi biner, dan reverse engineering CTF (ELF / PE / Mach-O / APK / WASM)"
 readme = "README.md"
 requires-python = ">=3.9"

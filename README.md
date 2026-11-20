@@ -7,7 +7,12 @@ Berjalan **100% offline** tanpa API AI dan dirancang nyaman dipakai di terminal 
 
 ## Fitur Utama
 
+- **`revtool audit <file>`** — **Audit Kerentanan Statis Biner & Pemetaan CWE:**
+  - Pemindaian otomatis fungsi rentan / berbahaya: **CWE-120 / CWE-242** (`gets`, `strcpy`, `strcat`, `sprintf`), **CWE-134** (Format String dinamis via analisis register `rdi`/stack), **CWE-78** (OS Command Injection via `system`, `popen`), **CWE-338** (Weak PRNG `rand`/`srand` dengan catatan prediktabilitas CTF), **CWE-732** (Izin memori RWX via `mprotect`/`VirtualProtect` atau section statis), dan **CWE-770** (`alloca`).
+  - **Korelasi Hardening Checksec:** Eskalasi severity otomatis ke **CRITICAL** bila fungsi buffer overflow terdeteksi pada biner tanpa Stack Canary.
+  - Catatan triage reverse engineering (lokasi offset stack, Saved RIP, format specifier leak `%p`/`%x`/`%n`) dan rekomendasi remediasi defensif.
 - **`revtool recon <file>`** — **Recon Statis Lengkap Bertahap (`Phase 1`–`5`) + Penjelasan Bahasa Indonesia:**
+  - **Deteksi & Pelacakan Otomatis `main()` Multi-Arsitektur (`main_finder`):** Resolusi presisi fungsi `main()` utama bahkan pada biner *stripped* (ELF x86_64 non-PIE `mov rdi` & PIE `lea rdi`, ELF x86 32-bit `push`, ELF AArch64 ARM64 `adrp+add`, ARM 32-bit `ldr r0`, Windows PE CRT Startup dispatch, Mach-O `LC_MAIN`, Go `main.main`, Rust `crate::main`, dan Dlang `_Dmain`).
   - *Fingerprinting* bahasa/runtime/packer: **D (Dlang)** (`_Dmain` + LDC/DMD), **Go** (`gopclntab` hingga 500k simbol + deteksi versi `go1.xx` & filter runtime), **Rust**, **Zig**, **Nim**, **PyInstaller** (+ versi Python), **.NET**, **UPX / suspek custom packer**, **V8 Code Cache / NW.js snapshot** (`nwjc`), serta **React Native Hermes Bytecode** (`.hbc`).
   - **Go Concurrency & Channels:** Deteksi otomatis pemrosesan konkuren/goroutines via `chan` (`makechan`, `chansend`, `chanrecv`, `selectgo`).
   - **Pre-Entry Hooks:** Deteksi *PE TLS Callbacks* (dieksekusi sebelum Entry Point) dan *ELF `.init_array` constructors* (dieksekusi sebelum `main()`).
@@ -57,6 +62,7 @@ Pastikan `~/.local/bin` sudah masuk ke `PATH` (misalnya di `~/.bashrc` atau `~/.
 ```bash
 revtool --help
 revtool recon ./challenge
+revtool audit ./challenge
 revtool sections ./challenge
 revtool strings ./challenge -i
 revtool crypto ./challenge

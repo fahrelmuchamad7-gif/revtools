@@ -731,6 +731,65 @@ class TestRevtool(unittest.TestCase):
         self.assertTrue(go_chan_rec["go_concurrency"])
         self.assertTrue(any("Go Concurrency" in l for l in go_chan_rec["tactical_leads"]))
 
+    def test_main_finder_and_cwe_audit(self) -> None:
+        """Test multi-architecture main() resolver and defensive static CWE auditor."""
+        from revtool.cwe_audit import audit_binary
+        from revtool.main_finder import resolve_main
+        from revtool.recon import run_recon
+
+        # 1. Non-PIE stripped ELF x86_64: _start -> mov rdi, 0x1140; call __libc_start_main
+        elf_data = bytearray(_build_minimal_elf64())
+        # Overwrite _start at 0x140 with `mov rdi, 0x1140; call 0x114c; hlt`
+        # 48 c7 c7 40 11 00 00 (mov rdi, 0x1140); e8 00 00 00 00 (call); f4 (hlt)
+        elf_data[0x140 : 0x14D] = b"\x48\xc7\xc7\x40\x11\x00\x00\xe8\x00\x00\x00\x00\xf4"
+        elf_path = self.root / "test_nonpie_stripped"
+        elf_path.write_bytes(bytes(elf_data))
+
+        rep = analyze_file(elf_path)
+        # In stripped scenario (remove symbols)
+        rep["symbols"] = []
+        resolved = resolve_main(bytes(elf_data), rep)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved["address_hex"], "0x1140")
+        self.assertEqual(resolved["name"], "main")
+        self.assertIn("ELF x86_64", resolved["origin"])
+
+        # 2. CWE Audit: gets without Stack Canary -> CRITICAL CWE-120 / CWE-242
+        rep_vuln = {
+            "format": "ELF",
+            "header": {"architecture": "x86_64", "bits": 64},
+            "mitigations": {"Stack Canary": "Not Found", "NX": "Enabled", "PIE": "Disabled"},
+            "imported_symbols": [{"name": "gets"}, {"name": "rand"}],
+            "plt_map": {},
+            "symbols": [],
+            "sections": [],
+        }
+        audit_res = audit_binary(b"", rep_vuln)
+        crit_finds = [f for f in audit_res["findings"] if f["severity"] == "CRITICAL"]
+        self.assertTrue(len(crit_finds) >= 1)
+        self.assertIn("CWE-120", crit_finds[0]["cwe"])
+        self.assertIn("gets", crit_finds[0]["symbol"])
+
+        # rand() -> CWE-338 (Weak PRNG)
+        prng_finds = [f for f in audit_res["findings"] if "CWE-338" in f["cwe"]]
+        self.assertTrue(len(prng_finds) >= 1)
+        self.assertEqual(prng_finds[0]["severity"], "MEDIUM")
+
+        # 3. CLI subcommand `audit` output and JSON mode
+        out_buf = io.StringIO()
+        with redirect_stdout(out_buf):
+            rc = main(["audit", str(elf_path), "--no-banner"])
+        self.assertEqual(rc, 0)
+        self.assertIn("Vulnerability & CWE Static Audit", out_buf.getvalue())
+
+        json_buf = io.StringIO()
+        with redirect_stdout(json_buf):
+            rc_json = main(["audit", str(elf_path), "--json"])
+        self.assertEqual(rc_json, 0)
+        parsed_json = json.loads(json_buf.getvalue())
+        self.assertIn("findings", parsed_json)
+        self.assertIn("summary", parsed_json)
+
     def test_cli_missing_file_returns_nonzero(self) -> None:
         err = io.StringIO()
         with redirect_stderr(err):

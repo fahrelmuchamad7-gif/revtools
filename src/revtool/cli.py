@@ -10,6 +10,7 @@ from typing import Sequence
 
 from revtool import __version__
 from revtool.crypto_scan import scan_crypto_constants, scan_embedded_magic
+from revtool.cwe_audit import audit_binary
 from revtool.disasm import disassemble_file
 from revtool.explain import explain_recon, explain_subcommand
 from revtool.display import (
@@ -17,6 +18,7 @@ from revtool.display import (
     Theme,
     format_blobs,
     format_crypto,
+    format_cwe_audit,
     format_disasm,
     format_imports,
     format_info,
@@ -111,6 +113,7 @@ def build_parser() -> argparse.ArgumentParser:
         epilog=(
             "contoh penggunaan:\n"
             "  revtool recon ./challenge\n"
+            "  revtool audit ./challenge\n"
             "  revtool triage ./challenge\n"
             "  revtool sections ./challenge\n"
             "  revtool imports ./challenge -l 0\n"
@@ -249,6 +252,13 @@ def build_parser() -> argparse.ArgumentParser:
     )
     _add_common_flags(p_recon)
 
+    # audit
+    p_audit = subparsers.add_parser(
+        "audit",
+        help="Audit kerentanan biner statis dan mapping CWE (Buffer Overflow, Format String, Command Injection, Weak PRNG, RWX)",
+    )
+    _add_common_flags(p_audit)
+
     # strings
     p_strings = subparsers.add_parser(
         "strings",
@@ -338,6 +348,28 @@ def main(argv: Sequence[str] | None = None) -> int:
         print(recon_text)
         if not getattr(args, "no_explain", False):
             print(explain_recon(recon_report, theme, phase=next_phase))
+        return 0
+
+    if args.command == "audit":
+        try:
+            data = Path(args.file).read_bytes()
+            report = analyze_file(args.file)
+            audit_report = audit_binary(data, report)
+        except (FileNotFoundError, IsADirectoryError, PermissionError, OSError) as exc:
+            print(f"revtool: error: {exc}", file=sys.stderr)
+            return 1
+
+        if getattr(args, "json", False):
+            print(json.dumps(audit_report, indent=2))
+            return 0
+
+        theme = Theme(use_color=not args.no_color)
+        if not getattr(args, "no_banner", False):
+            print(render_banner(__version__, theme))
+            print()
+        print(format_cwe_audit(audit_report, theme))
+        if not getattr(args, "no_explain", False):
+            print(explain_subcommand("audit", audit_report, theme))
         return 0
 
     if args.command == "xform":

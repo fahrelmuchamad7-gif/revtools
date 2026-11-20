@@ -410,12 +410,40 @@ def explain_recon(recon: dict[str, Any], theme: Theme, phase: int = 5) -> str:
             )
         )
 
+    # 7. Vulnerability & CWE Audit
+    cwe_audit = recon.get("cwe_audit", {})
+    cwe_findings = cwe_audit.get("findings", [])
+    if cwe_findings:
+        crit_finds = [f for f in cwe_findings if f["severity"] == "CRITICAL"]
+        high_finds = [f for f in cwe_findings if f["severity"] == "HIGH"]
+        if crit_finds:
+            cf = crit_finds[0]
+            lines.append(
+                _note(
+                    theme,
+                    "Kerentanan Kritis",
+                    f"Ditemukan {cf['cwe']} pada `{cf['symbol']}` ({cf['title']}). {cf['re_note']} "
+                    f"Rekomendasi perbaikan: {cf['remediation']}",
+                )
+            )
+        elif high_finds:
+            hf = high_finds[0]
+            lines.append(
+                _note(
+                    theme,
+                    "Potensi Kerentanan",
+                    f"Ditemukan {hf['cwe']} pada `{hf['symbol']}` ({hf['title']}). {hf['re_note']} "
+                    f"Rekomendasi perbaikan: {hf['remediation']}",
+                )
+            )
+
     return "\n".join(lines)
 
 
 def explain_subcommand(command: str, context: dict[str, Any], theme: Theme) -> str:
     """Hasilkan catatan penjelasan berbahasa Indonesia untuk subcommand."""
     notes: dict[str, str] = {
+        "audit": "Hasil audit kerentanan statis biner dan pemetaan CWE (Buffer Overflow, Format String, Command Injection, Weak PRNG, izin RWX) beserta catatan triage reverse engineering.",
         "triage": "Ringkasan struktur biner (identitas file, header ELF/PE, status proteksi, tabel section + entropi, dan ringkasan import).",
         "info": "Detail metadata file, hash (MD5/SHA-1/SHA-256), header arsitektur, Entry Point, dan flag mitigasi biner.",
         "sections": "Daftar section beserta VAddr, Offset file, ukuran, izin RWX, dan entropi (section >= 7.20 atau RWX perlu diperiksa lebih lanjut).",

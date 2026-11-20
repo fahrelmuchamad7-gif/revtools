@@ -14,6 +14,8 @@ from revtool.crypto_scan import (
     scan_crypto_constants,
     scan_embedded_magic,
 )
+from revtool.cwe_audit import audit_binary
+from revtool.main_finder import resolve_main
 from revtool.parsers import analyze_file
 from revtool.strings_scan import extract_strings
 from revtool.utils import calculate_entropy, read_cstr
@@ -103,7 +105,13 @@ def fingerprint_runtime(
         or b"/dlang/" in data
         or b"core.internal" in data
         or b"import/std/" in data
-        or any(str(s.get("name", "")).startswith("_D") for s in report.get("symbols", []))
+        or any(
+            str(s.get("name", "")).startswith("_D")
+            and not str(s.get("name", "")).startswith(("_DYNAMIC", "_DEBUG"))
+            and len(str(s.get("name", ""))) >= 3
+            and (str(s.get("name", ""))[2].isdigit() or str(s.get("name", "")).startswith(("_Dmain", "_d_")))
+            for s in report.get("symbols", [])
+        )
     ):
         ldc_ver = re.search(rb"ldc-\d+\.\d+\.\d+", data, re.I)
         if ldc_ver:
@@ -545,7 +553,19 @@ def analyze_main_flow(
         if int(s.get("value", 0)) > 0 and s.get("name")
     }
 
-    md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+    hdr = report.get("header", {})
+    arch = str(hdr.get("architecture", "")).lower()
+    bits = hdr.get("bits")
+
+    if "arm64" in arch or "aarch64" in arch:
+        md = capstone.Cs(capstone.CS_ARCH_ARM64, capstone.CS_MODE_ARM)
+    elif "arm" in arch:
+        md = capstone.Cs(capstone.CS_ARCH_ARM, capstone.CS_MODE_ARM)
+    elif bits == 32 or "x86" in arch or "i386" in arch or "i686" in arch:
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_32)
+    else:
+        md = capstone.Cs(capstone.CS_ARCH_X86, capstone.CS_MODE_64)
+
     chunk = data[main_off : min(len(data), main_off + 512)]
 
     calls: list[str] = []
@@ -1020,6 +1040,8 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
     is_dlang = any("D (Dlang)" in r for r in runtime)
     dlang_main_candidate: str | None = None
     go_main_candidate: str | None = None
+    main_info: dict[str, Any] | None = None
+    cwe_report: dict[str, Any] = {"findings": [], "summary": {}, "mitigations": {}}
     api_behaviors = classify_api_behaviors(report, is_go=is_go)
     archive_info = inspect_archive(data)
     wasm_info = inspect_wasm(data) if fmt == "WASM" else None
@@ -1059,18 +1081,27 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         if is_go and entropy_blobs:
             entropy_blobs = annotate_go_blob_xrefs(data, report, entropy_blobs)
         code_scan = scan_code_anomalies(data, report, is_go=is_go)
+        main_info = resolve_main(data, report)
+        if main_info:
+            if not code_scan.get("main_candidate"):
+                code_scan["main_candidate"] = main_info["address_hex"]
+            if main_info["name"] == "_Dmain":
+                dlang_main_candidate = main_info["address_hex"]
+            elif main_info["name"] == "main.main":
+                go_main_candidate = main_info["address_hex"]
+
         main_flow = analyze_main_flow(data, report, code_scan.get("main_candidate"))
 
-        # Dlang _Dmain resolution
-        if is_dlang:
+        # Dlang _Dmain resolution fallback
+        if is_dlang and not dlang_main_candidate:
             dlang_main_candidate = _resolve_dlang_main(data, report, code_scan.get("main_candidate"))
             if dlang_main_candidate:
                 d_flow = analyze_main_flow(data, report, dlang_main_candidate)
                 if d_flow and (d_flow.get("calls") or d_flow.get("inline_hints") or d_flow.get("data_refs")):
                     main_flow = d_flow
 
-        # Go main.main resolution
-        if is_go:
+        # Go main.main resolution fallback
+        if is_go and not go_main_candidate:
             go_main_sym = next(
                 (s for s in report.get("symbols", []) if s.get("name") == "main.main" and int(s.get("value", 0)) > 0),
                 None,
@@ -1081,6 +1112,8 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
                     code_scan["main_candidate"] = go_main_candidate
                 if not main_flow:
                     main_flow = analyze_main_flow(data, report, go_main_candidate)
+
+        cwe_report = audit_binary(data, report)
 
         interesting_strings = extract_strings(
             data,
@@ -1121,7 +1154,11 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         # First entry is typically GCC frame_dummy; additional entries are custom constructors
         extra = ", ".join(f"0x{a:x}" for a in init_functions[1:5])
         leads.append(f"ELF .init_array has {len(init_functions)} constructors (custom pre-main: {extra})")
-    if code_scan.get("main_candidate"):
+    if main_info:
+        leads.append(
+            f"Main Function ({main_info['name']}) identified at {main_info['address_hex']} ({main_info['origin']})"
+        )
+    elif code_scan.get("main_candidate"):
         leads.append(
             f"Stripped ELF main() candidate at {code_scan['main_candidate']} "
             "(resolved via _start -> __libc_start_main)"
@@ -1129,6 +1166,9 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
     if main_flow and main_flow.get("inline_hints"):
         for ih in main_flow["inline_hints"]:
             leads.append(f"Inline logic inside main(): {ih}")
+    for f in cwe_report.get("findings", []):
+        if f.get("severity") in ("CRITICAL", "HIGH"):
+            leads.append(f"Vulnerability Audit [{f['severity']}]: {f['cwe']} ({f['symbol']}) — {f['title']}")
     for b in api_behaviors:
         if b["severity"] == "HIGH":
             leads.append(f"{b['category']}: {', '.join(b['symbols'][:6])}")
@@ -1189,6 +1229,8 @@ def run_recon(file_path: str | Path) -> dict[str, Any]:
         "header": hdr,
         "mitigations": report.get("mitigations", {}),
         "runtime_fingerprint": runtime,
+        "main_function": main_info,
+        "cwe_audit": cwe_report,
         "go_main_candidate": go_main_candidate,
         "dlang_main_candidate": dlang_main_candidate,
         "go_concurrency": has_go_channels,

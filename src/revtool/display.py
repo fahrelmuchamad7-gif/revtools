@@ -448,6 +448,82 @@ def render_banner(version: str, theme: Theme) -> str:
     return "\n".join(lines)
 
 
+def format_cwe_audit(audit: dict[str, Any], theme: Theme) -> str:
+    """Format static binary vulnerability audit and CWE mapping."""
+    lines: list[str] = []
+    findings = audit.get("findings", [])
+    summary = audit.get("summary", {})
+
+    crit = summary.get("critical", 0)
+    high = summary.get("high", 0)
+    med = summary.get("medium", 0)
+    info = summary.get("info", 0)
+
+    header_title = f"Vulnerability & CWE Static Audit (Findings: {len(findings)})"
+    lines.append(render_section_header(header_title, theme).lstrip("\n"))
+
+    summary_parts = []
+    if crit > 0:
+        summary_parts.append(theme.red(f"{crit} CRITICAL"))
+    if high > 0:
+        summary_parts.append(theme.red(f"{high} HIGH"))
+    if med > 0:
+        summary_parts.append(theme.yellow(f"{med} MEDIUM"))
+    if info > 0:
+        summary_parts.append(theme.cyan(f"{info} INFO"))
+
+    if not summary_parts:
+        summary_parts.append(theme.green("0 Findings (Clean)"))
+
+    lines.append(f"  {theme.badge_info()} {theme.bold('Audit Summary:')} {', '.join(summary_parts)}")
+
+    mits = audit.get("mitigations", {})
+    if mits:
+        canary = mits.get("Stack Canary", "-")
+        nx = mits.get("NX", "-")
+        pie = mits.get("PIE", "-")
+        relro = mits.get("RELRO", "-")
+        lines.append(
+            f"  {theme.badge_info()} {theme.bold('Hardening:')} "
+            f"Canary: {_color_mitigation(canary, theme)} | "
+            f"NX: {_color_mitigation(nx, theme)} | "
+            f"PIE: {_color_mitigation(pie, theme)} | "
+            f"RELRO: {_color_mitigation(relro, theme)}"
+        )
+    lines.append("")
+
+    if not findings:
+        lines.append(f"  {theme.badge_ok()} {theme.dim('Tidak ditemukan API terlarang atau kerentanan statis berisiko tinggi.')}")
+        return "\n".join(lines)
+
+    for idx, f in enumerate(findings, 1):
+        sev = f["severity"]
+        if sev == "CRITICAL":
+            sev_badge = theme.red(f"[{sev}]")
+        elif sev == "HIGH":
+            sev_badge = theme.red(f"[{sev}]")
+        elif sev == "MEDIUM":
+            sev_badge = theme.yellow(f"[{sev}]")
+        else:
+            sev_badge = theme.cyan(f"[{sev}]")
+
+        cwe = f.get("cwe", "-")
+        sym = f.get("symbol", "-")
+        title = f.get("title", "-")
+        desc = f.get("description", "-")
+        re_note = f.get("re_note", "-")
+        remediation = f.get("remediation", "-")
+
+        lines.append(f"  {sev_badge} {theme.bold(cwe)}: {theme.bold_cyan(sym)} — {theme.bold(title)}")
+        lines.append(f"      {theme.dim('Deskripsi')}  : {desc}")
+        lines.append(f"      {theme.yellow('RE / CTF')}   : {re_note}")
+        lines.append(f"      {theme.green('Remediasi')}  : {remediation}")
+        if idx < len(findings):
+            lines.append("")
+
+    return "\n".join(lines)
+
+
 def format_disasm(disasm_report: dict[str, Any], theme: Theme) -> str:
     """Render disassembled instructions table."""
     lines = [
@@ -509,7 +585,12 @@ def format_recon_with_phase(recon: dict[str, Any], theme: Theme) -> tuple[str, i
             profile_items.append(("Entry Point", f"0x{hdr['entry_point']:x}"))
     if runtime:
         profile_items.append(("Runtime / Compiler", ", ".join(runtime)))
-    if recon.get("dlang_main_candidate"):
+    if recon.get("main_function"):
+        mf = recon["main_function"]
+        profile_items.append(
+            ("Main Function", theme.bold_cyan(f"{mf['address_hex']} ({mf['name']}) via {mf['origin']}"))
+        )
+    elif recon.get("dlang_main_candidate"):
         profile_items.append(
             ("Dlang user main()", theme.bold_cyan(f"{recon['dlang_main_candidate']} (_Dmain)"))
         )
@@ -550,6 +631,27 @@ def format_recon_with_phase(recon: dict[str, Any], theme: Theme) -> tuple[str, i
             lines.append(f"  {theme.badge_warn()} {lead}")
     else:
         lines.append(f"  {theme.badge_ok()} {theme.dim('Tidak ada anomali mencurigakan yang menonjol.')}")
+
+    # Vulnerability & CWE Static Audit (if detected)
+    cwe_audit = recon.get("cwe_audit", {})
+    audit_findings = cwe_audit.get("findings", [])
+    if audit_findings:
+        lines.append("")
+        lines.append(f"  {theme.badge_warn()} {theme.bold(f'Vulnerability & CWE Audit Findings ({len(audit_findings)}):')}")
+        rows = []
+        for f in audit_findings:
+            sev = f["severity"]
+            sev_col = (
+                theme.red(sev) if sev in ("CRITICAL", "HIGH")
+                else (theme.yellow(sev) if sev == "MEDIUM" else theme.cyan(sev))
+            )
+            rows.append([
+                sev_col,
+                theme.bold(f["cwe"]),
+                theme.bold_cyan(f["symbol"]),
+                f["title"],
+            ])
+        lines.extend(render_table(["Sev", "CWE", "Symbol / Surface", "Vulnerability Note"], rows, theme))
 
     # Phase 3 (only if present): API Behavior, main() Flow & Code Scan
     behaviors = recon.get("api_behaviors", [])
